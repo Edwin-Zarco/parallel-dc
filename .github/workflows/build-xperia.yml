@@ -1,0 +1,73 @@
+name: Build parallel-dc (Xperia Play / Android 4.0.4)
+
+# Place at .github/workflows/build-xperia-play.yml
+# Target: Xperia Play (Snapdragon S2 / Scorpion, ARMv7-A, NEON, Adreno 205 GLES2)
+# NDK r23c, armeabi-v7a only, ARM dynarec, no Vulkan.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android-armv7:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set up NDK r23c
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r23c
+          link-to-sdk: true
+
+      - name: Build (armeabi-v7a, API 16, NEON, ARM dynarec)
+        working-directory: jni
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          # NDK r23c's minimum platform is android-16 (4.1); this is the
+          # closest it can get to 4.0.4 (API 15).
+          OPT_CFLAGS="-O3 -mcpu=cortex-a8 -mtune=cortex-a8 -mfpu=neon \
+            -ftree-vectorize -fomit-frame-pointer -fno-stack-protector \
+            -fvisibility=hidden -ffunction-sections -fdata-sections \
+            -fno-semantic-interposition -flto=thin"
+          OPT_LDFLAGS="-flto=thin -Wl,--gc-sections -Wl,--icf=safe -Wl,-O2 \
+            -Wl,--as-needed"
+
+          "$ANDROID_NDK_HOME/ndk-build" -j"$(nproc)" \
+            APP_ABI=armeabi-v7a \
+            APP_PLATFORM=android-16 \
+            APP_STL=c++_static \
+            APP_OPTIM=release \
+            APP_CFLAGS="$OPT_CFLAGS" \
+            APP_CPPFLAGS="$OPT_CFLAGS" \
+            APP_LDFLAGS="$OPT_LDFLAGS" \
+            HAVE_VULKAN=0 \
+            ENABLE_MODEM=0
+
+      - name: Strip and package
+        run: |
+          # ndk-build writes to <repo>/libs/<abi>/ when run from jni/
+          TC="${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          mkdir -p dist
+          cp libs/armeabi-v7a/libretro.so dist/parallel_dc_libretro_android.so
+          "$TC/llvm-strip" --strip-unneeded dist/parallel_dc_libretro_android.so
+          "$TC/llvm-readelf" -A dist/parallel_dc_libretro_android.so | grep -E "Tag_CPU_arch|Tag_FP_arch|Tag_Advanced_SIMD" || true
+          "$TC/llvm-readelf" -d dist/parallel_dc_libretro_android.so | grep NEEDED
+          ls -l dist
+
+      - name: Upload core
+        uses: actions/upload-artifact@v7
+        with:
+          name: parallel_dc_libretro_android_armv7_xperia_play
+          path: dist/parallel_dc_libretro_android.so
+          if-no-files-found: error
