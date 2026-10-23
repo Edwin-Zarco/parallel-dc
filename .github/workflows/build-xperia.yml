@@ -29,17 +29,42 @@ jobs:
           ndk-version: r23c
           link-to-sdk: true
 
+      - name: Create API 16 compat shim
+        run: |
+          # posix_fadvise / posix_fallocate only exist in bionic from API 21.
+          # Both are pure hints for the core's VFS code, so no-ops are safe.
+          cat > "$RUNNER_TEMP/compat_api16.h" <<'EOF2'
+          #ifndef COMPAT_API16_H
+          #define COMPAT_API16_H
+          #ifndef __ASSEMBLER__
+          #include <sys/types.h>
+          #include <fcntl.h>
+          #endif
+          #if !defined(__ASSEMBLER__) && defined(__ANDROID__) && __ANDROID_API__ < 21
+          #ifndef POSIX_FADV_SEQUENTIAL
+          #define POSIX_FADV_SEQUENTIAL 2
+          #endif
+          static inline int posix_fadvise(int fd, off_t off, off_t len, int advice)
+          { (void)fd; (void)off; (void)len; (void)advice; return 0; }
+          static inline int posix_fallocate(int fd, off_t off, off_t len)
+          { (void)fd; (void)off; (void)len; return 0; }
+          #endif
+          #endif
+          EOF2
+
       - name: Build (armeabi-v7a, API 16, NEON, ARM dynarec)
         working-directory: jni
         env:
           ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+          COMPAT_H: ${{ runner.temp }}/compat_api16.h
         run: |
           # NDK r23c's minimum platform is android-16 (4.1); this is the
           # closest it can get to 4.0.4 (API 15).
           OPT_CFLAGS="-O3 -mcpu=cortex-a8 -mtune=cortex-a8 -mfpu=neon \
             -ftree-vectorize -fomit-frame-pointer -fno-stack-protector \
             -fvisibility=hidden -ffunction-sections -fdata-sections \
-            -fno-semantic-interposition -flto=thin"
+            -fno-semantic-interposition -flto=thin \
+            -include $COMPAT_H"
           OPT_LDFLAGS="-flto=thin -Wl,--gc-sections -Wl,--icf=safe -Wl,-O2 \
             -Wl,--as-needed"
 
